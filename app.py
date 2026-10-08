@@ -15,6 +15,8 @@ from modules.duplicates import detect_duplicates
 
 from modules.invalid_values import detect_invalid_values
 
+from modules.data_type_validation import detect_data_type_problems
+
 # -----------------------------------
 # Page Configuration
 # -----------------------------------
@@ -232,6 +234,31 @@ if uploaded_file is not None:
             )
         else:
             st.success("No invalid values found.")
+
+        # ===================================
+        # DATA TYPE PROBLEMS
+        # ===================================
+
+        st.subheader("Data Type Problems")
+
+        data_type_problems = detect_data_type_problems(df)
+
+        if not data_type_problems.empty:
+
+            st.warning(
+                f"{len(data_type_problems)} data type problem(s) detected."
+            )
+
+            st.dataframe(
+                data_type_problems,
+                use_container_width=True
+            )
+
+        else:
+
+            st.success(
+                "No data type problems found."
+            )
 
     # -----------------------------------
     # Error Handling
