@@ -9,6 +9,7 @@ from modules.profiling import (
     get_duplicate_count
 )
 
+from modules.missing_values import detect_missing_values
 
 st.set_page_config(
     page_title="Intelligent Data Quality Platform",
@@ -82,6 +83,15 @@ if uploaded_file is not None:
 
         st.dataframe(
             column_info,
+            use_container_width=True
+        )
+
+        st.subheader("Missing Value Detection")
+
+        missing_values = detect_missing_values(df)
+
+        st.dataframe(
+            missing_values,
             use_container_width=True
         )
 
