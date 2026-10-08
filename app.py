@@ -19,21 +19,16 @@ from modules.data_type_validation import detect_data_type_problems
 
 from modules.format_validation import detect_format_problems
 
-# -----------------------------------
-# Page Configuration
-# -----------------------------------
+from modules.consistency import detect_inconsistent_values
 
+# Page Configuration
 st.set_page_config(
     page_title="Intelligent Data Quality Platform",
     page_icon="📊",
     layout="wide"
 )
 
-
-# -----------------------------------
 # Title
-# -----------------------------------
-
 st.title("Intelligent Data Quality & Anomaly Platform")
 
 st.write(
@@ -41,21 +36,13 @@ st.write(
     "and detect potential problems."
 )
 
-
-# -----------------------------------
 # File Upload
-# -----------------------------------
-
 uploaded_file = st.file_uploader(
     "Upload your dataset",
     type=["csv", "xlsx", "xls", "json"]
 )
 
-
-# -----------------------------------
 # Process Dataset
-# -----------------------------------
-
 if uploaded_file is not None:
 
     try:
@@ -70,17 +57,10 @@ if uploaded_file is not None:
         st.success("Dataset uploaded successfully!")
 
 
-        # ===================================
         # PHASE 3 — DATA PROFILING
-        # ===================================
-
         st.header("📊 Data Profiling")
 
-
-        # -----------------------------------
         # Basic Information
-        # -----------------------------------
-
         basic_info = get_basic_info(df)
 
         st.subheader("Dataset Overview")
@@ -105,22 +85,14 @@ if uploaded_file is not None:
                 get_duplicate_count(df)
             )
 
-
-        # -----------------------------------
         # Column Names
-        # -----------------------------------
-
         st.subheader("Column Names")
 
         st.write(
             basic_info["column_names"]
         )
 
-
-        # -----------------------------------
         # Dataset Preview
-        # -----------------------------------
-
         st.subheader("Dataset Preview")
 
         st.dataframe(
@@ -128,11 +100,7 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-
-        # -----------------------------------
         # Column Information
-        # -----------------------------------
-
         st.subheader("Column Information")
 
         column_info = get_column_info(df)
@@ -142,11 +110,7 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-
-        # -----------------------------------
         # Numerical Statistics
-        # -----------------------------------
-
         st.subheader("Numerical Statistics")
 
         statistics = get_numerical_statistics(df)
@@ -164,18 +128,10 @@ if uploaded_file is not None:
                 "No numerical columns found."
             )
 
-
-        # ===================================
         # PHASE 4 — DATA QUALITY DETECTION
-        # ===================================
-
         st.header("🔍 Data Quality Detection")
 
-
-        # ===================================
         # MISSING VALUE DETECTION
-        # ===================================
-
         st.subheader("Missing Value Detection")
 
         missing_values = detect_missing_values(df)
@@ -185,11 +141,7 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-
-        # ===================================
         # DUPLICATE DETECTION
-        # ===================================
-
         st.subheader("Duplicate Detection")
 
         duplicate_rows = detect_duplicates(df)
@@ -216,9 +168,7 @@ if uploaded_file is not None:
                 "No duplicate rows found."
             )
 
-        # ===================================
         # INVALID VALUE DETECTION
-        # ===================================
         st.subheader("Invalid Value Detection")
 
         rules = {
@@ -237,10 +187,7 @@ if uploaded_file is not None:
         else:
             st.success("No invalid values found.")
 
-        # ===================================
         # DATA TYPE PROBLEMS
-        # ===================================
-
         st.subheader("Data Type Problems")
 
         data_type_problems = detect_data_type_problems(df)
@@ -262,10 +209,7 @@ if uploaded_file is not None:
                 "No data type problems found."
             )
 
-        # ===================================
         # FORMAT VALIDATION
-        # ===================================
-
         st.subheader("Format Validation")
 
         format_problems = detect_format_problems(df)
@@ -286,10 +230,30 @@ if uploaded_file is not None:
             st.success(
                 "No format problems found."
             )
-    # -----------------------------------
-    # Error Handling
-    # -----------------------------------
 
+            # CONSISTENCY DETECTION
+            st.subheader("Consistency Detection")
+
+            inconsistencies = detect_inconsistent_values(df)
+
+            if not inconsistencies.empty:
+
+                st.warning(
+                    f"{len(inconsistencies)} inconsistent representation(s) detected."
+                )
+
+                st.dataframe(
+                    inconsistencies,
+                    use_container_width=True
+                )
+
+            else:
+
+                st.success(
+                    "No consistency problems found."
+                )
+
+    # Error Handling
     except Exception as e:
 
         st.error(
