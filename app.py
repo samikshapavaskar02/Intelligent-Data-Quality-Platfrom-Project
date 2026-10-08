@@ -13,6 +13,7 @@ from modules.missing_values import detect_missing_values
 
 from modules.duplicates import detect_duplicates
 
+from modules.invalid_values import detect_invalid_values
 
 # -----------------------------------
 # Page Configuration
@@ -168,7 +169,7 @@ if uploaded_file is not None:
 
 
         # ===================================
-        # STEP 4 — MISSING VALUE DETECTION
+        # MISSING VALUE DETECTION
         # ===================================
 
         st.subheader("Missing Value Detection")
@@ -182,7 +183,7 @@ if uploaded_file is not None:
 
 
         # ===================================
-        # STEP 5 — DUPLICATE DETECTION
+        # DUPLICATE DETECTION
         # ===================================
 
         st.subheader("Duplicate Detection")
@@ -211,6 +212,26 @@ if uploaded_file is not None:
                 "No duplicate rows found."
             )
 
+        # ===================================
+        # INVALID VALUE DETECTION
+        # ===================================
+        st.subheader("Invalid Value Detection")
+
+        rules = {
+            "Age": (0, 120),
+            "Marks": (0, 100),
+            "Rating": (1, 5)
+        }
+
+        invalid_values = detect_invalid_values(df, rules)
+
+        if not invalid_values.empty:
+            st.dataframe(
+                invalid_values,
+                use_container_width=True
+            )
+        else:
+            st.success("No invalid values found.")
 
     # -----------------------------------
     # Error Handling
