@@ -17,6 +17,8 @@ from modules.invalid_values import detect_invalid_values
 
 from modules.data_type_validation import detect_data_type_problems
 
+from modules.format_validation import detect_format_problems
+
 # -----------------------------------
 # Page Configuration
 # -----------------------------------
@@ -260,6 +262,30 @@ if uploaded_file is not None:
                 "No data type problems found."
             )
 
+        # ===================================
+        # FORMAT VALIDATION
+        # ===================================
+
+        st.subheader("Format Validation")
+
+        format_problems = detect_format_problems(df)
+
+        if not format_problems.empty:
+
+            st.warning(
+                f"{len(format_problems)} format problem(s) detected."
+            )
+
+            st.dataframe(
+                format_problems,
+                use_container_width=True
+            )
+
+        else:
+
+            st.success(
+                "No format problems found."
+            )
     # -----------------------------------
     # Error Handling
     # -----------------------------------
