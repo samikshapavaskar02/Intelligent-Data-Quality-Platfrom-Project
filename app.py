@@ -11,6 +11,13 @@ from modules.profiling import (
 
 from modules.missing_values import detect_missing_values
 
+from modules.duplicates import detect_duplicates
+
+
+# -----------------------------------
+# Page Configuration
+# -----------------------------------
+
 st.set_page_config(
     page_title="Intelligent Data Quality Platform",
     page_icon="📊",
@@ -18,18 +25,31 @@ st.set_page_config(
 )
 
 
+# -----------------------------------
+# Title
+# -----------------------------------
+
 st.title("Intelligent Data Quality & Anomaly Platform")
 
 st.write(
-    "Upload your dataset to analyze data quality and detect anomalies."
+    "Upload your dataset to analyze data quality "
+    "and detect potential problems."
 )
 
+
+# -----------------------------------
+# File Upload
+# -----------------------------------
 
 uploaded_file = st.file_uploader(
     "Upload your dataset",
     type=["csv", "xlsx", "xls", "json"]
 )
 
+
+# -----------------------------------
+# Process Dataset
+# -----------------------------------
 
 if uploaded_file is not None:
 
@@ -38,10 +58,24 @@ if uploaded_file is not None:
         # Load dataset
         df = load_dataset(uploaded_file)
 
+        if df is None:
+            st.error("Unable to load the dataset.")
+            st.stop()
+
         st.success("Dataset uploaded successfully!")
 
 
-        # Basic information
+        # ===================================
+        # PHASE 3 — DATA PROFILING
+        # ===================================
+
+        st.header("📊 Data Profiling")
+
+
+        # -----------------------------------
+        # Basic Information
+        # -----------------------------------
+
         basic_info = get_basic_info(df)
 
         st.subheader("Dataset Overview")
@@ -49,10 +83,16 @@ if uploaded_file is not None:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric("Rows", basic_info["rows"])
+            st.metric(
+                "Rows",
+                basic_info["rows"]
+            )
 
         with col2:
-            st.metric("Columns", basic_info["columns"])
+            st.metric(
+                "Columns",
+                basic_info["columns"]
+            )
 
         with col3:
             st.metric(
@@ -61,13 +101,21 @@ if uploaded_file is not None:
             )
 
 
-        # Column names
+        # -----------------------------------
+        # Column Names
+        # -----------------------------------
+
         st.subheader("Column Names")
 
-        st.write(basic_info["column_names"])
+        st.write(
+            basic_info["column_names"]
+        )
 
 
-        # Dataset preview
+        # -----------------------------------
+        # Dataset Preview
+        # -----------------------------------
+
         st.subheader("Dataset Preview")
 
         st.dataframe(
@@ -76,7 +124,10 @@ if uploaded_file is not None:
         )
 
 
-        # Column information
+        # -----------------------------------
+        # Column Information
+        # -----------------------------------
+
         st.subheader("Column Information")
 
         column_info = get_column_info(df)
@@ -86,17 +137,11 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-        st.subheader("Missing Value Detection")
 
-        missing_values = detect_missing_values(df)
+        # -----------------------------------
+        # Numerical Statistics
+        # -----------------------------------
 
-        st.dataframe(
-            missing_values,
-            use_container_width=True
-        )
-
-
-        # Numerical statistics
         st.subheader("Numerical Statistics")
 
         statistics = get_numerical_statistics(df)
@@ -110,9 +155,69 @@ if uploaded_file is not None:
 
         else:
 
-            st.info("No numerical columns found.")
+            st.info(
+                "No numerical columns found."
+            )
 
+
+        # ===================================
+        # PHASE 4 — DATA QUALITY DETECTION
+        # ===================================
+
+        st.header("🔍 Data Quality Detection")
+
+
+        # ===================================
+        # STEP 4 — MISSING VALUE DETECTION
+        # ===================================
+
+        st.subheader("Missing Value Detection")
+
+        missing_values = detect_missing_values(df)
+
+        st.dataframe(
+            missing_values,
+            use_container_width=True
+        )
+
+
+        # ===================================
+        # STEP 5 — DUPLICATE DETECTION
+        # ===================================
+
+        st.subheader("Duplicate Detection")
+
+        duplicate_rows = detect_duplicates(df)
+
+        st.write(
+            "Total Duplicate Rows:",
+            get_duplicate_count(df)
+        )
+
+        if not duplicate_rows.empty:
+
+            st.warning(
+                "Duplicate rows detected."
+            )
+
+            st.dataframe(
+                duplicate_rows,
+                use_container_width=True
+            )
+
+        else:
+
+            st.success(
+                "No duplicate rows found."
+            )
+
+
+    # -----------------------------------
+    # Error Handling
+    # -----------------------------------
 
     except Exception as e:
 
-        st.error(f"Error while processing dataset: {e}")
+        st.error(
+            f"Error while processing dataset: {e}"
+        )
