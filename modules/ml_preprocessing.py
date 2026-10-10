@@ -5,10 +5,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
-# -----------------------------------
 # STEP 11: Identify column types
-# -----------------------------------
-
 def identify_columns(df):
 
     numerical_columns = df.select_dtypes(
@@ -23,10 +20,7 @@ def identify_columns(df):
     return numerical_columns, categorical_columns
 
 
-# -----------------------------------
 # STEP 12: Report original missing values
-# -----------------------------------
-
 def get_missing_value_report(df):
 
     data = df.copy()
@@ -50,11 +44,7 @@ def get_missing_value_report(df):
 
     return report
 
-
-# -----------------------------------
 # STEPS 11–14: Complete preprocessing
-# -----------------------------------
-
 def preprocess_for_ml(
     df,
     encoding_method="Automatic",
@@ -69,20 +59,17 @@ def preprocess_for_ml(
     # Treat blank strings as missing
     data = data.replace(r"^\s*$", pd.NA, regex=True)
 
-    # Step 11: Identify columns
+    # Identify columns
     numerical_columns, categorical_columns = identify_columns(data)
 
-    # Step 12: Record missing values BEFORE filling
+    # Record missing values BEFORE filling
     missing_report = get_missing_value_report(data)
 
     # Separate the columns
     numerical_data = data[numerical_columns].copy()
     categorical_data = data[categorical_columns].copy()
 
-    # -----------------------------------
-    # Step 12A: Numerical missing values
-    # -----------------------------------
-
+    # Numerical missing values
     if numerical_columns:
 
         # Handle columns containing only missing values
@@ -102,9 +89,7 @@ def preprocess_for_ml(
             index=data.index
         )
 
-    # -----------------------------------
     # Step 12B: Categorical missing values
-    # -----------------------------------
 
     if categorical_columns:
 
@@ -134,10 +119,8 @@ def preprocess_for_ml(
             index=data.index
         ).astype(str)
 
-    # -----------------------------------
-    # Step 13: Encode categorical columns
-    # -----------------------------------
 
+    # Step 13: Encode categorical columns
     encoded_data = pd.DataFrame(index=data.index)
     encoding_details = []
 
@@ -230,10 +213,8 @@ def preprocess_for_ml(
             "Encoding Method": method
         })
 
-    # -----------------------------------
-    # Step 14: Scale numerical columns
-    # -----------------------------------
 
+    # Step 14: Scale numerical columns
     if numerical_columns:
 
         scaler = StandardScaler()
