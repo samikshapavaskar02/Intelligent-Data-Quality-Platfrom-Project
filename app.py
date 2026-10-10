@@ -21,6 +21,8 @@ from modules.format_validation import detect_format_problems
 
 from modules.consistency import detect_inconsistent_values
 
+from modules.statistical_outliers import detect_iqr_outliers
+
 # Page Configuration
 st.set_page_config(
     page_title="Intelligent Data Quality Platform",
@@ -252,6 +254,29 @@ if uploaded_file is not None:
                 st.success(
                     "No consistency problems found."
                 )
+
+        # PHASE 5 — STATISTICAL OUTLIER DETECTION
+        st.header("Statistical Outlier Detection")
+        st.subheader("IQR Outlier Detection")
+
+        outliers = detect_iqr_outliers(df)
+
+        if not outliers.empty:
+
+            st.warning(
+                f"{len(outliers)} potential outlier(s) detected."
+            )
+
+            st.dataframe(
+                outliers,
+                use_container_width=True
+            )
+
+        else:
+
+            st.success(
+                "No potential outliers detected using the IQR method."
+            )
 
     # Error Handling
     except Exception as e:
