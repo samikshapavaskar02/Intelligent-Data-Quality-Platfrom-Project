@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 
 from modules.data_loader import load_dataset
 
@@ -22,6 +23,8 @@ from modules.format_validation import detect_format_problems
 from modules.consistency import detect_inconsistent_values
 
 from modules.statistical_outliers import detect_iqr_outliers
+
+from modules.ml_preprocessing import (identify_columns,preprocess_for_ml)
 
 # Page Configuration
 st.set_page_config(
@@ -277,6 +280,137 @@ if uploaded_file is not None:
             st.success(
                 "No potential outliers detected using the IQR method."
             )
+
+
+        # PHASE 6 — ML PREPROCESSING
+        st.header("ML Preprocessing")
+
+        if df.empty:
+
+            st.warning("The uploaded dataset is empty.")
+
+        else:
+
+            # Step 11: Identify column types
+            clean_df = df.replace(r"^\s*$", pd.NA, regex=True)
+
+            numerical_columns, categorical_columns = identify_columns(
+                clean_df
+            )
+
+            st.subheader("Step 11 — Automatic Column Identification")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.write("Numerical Columns")
+                st.write(numerical_columns)
+
+            with col2:
+                st.write("Categorical Columns")
+                st.write(categorical_columns)
+
+            # Step 13: Choose encoding method
+            st.subheader("Step 13 — Encoding Strategy")
+
+            encoding_method = st.selectbox(
+                "Choose categorical encoding",
+                [
+                    "Automatic",
+                    "One-Hot",
+                    "Frequency",
+                    "Ordinal"
+                ],
+                help=(
+                    "Automatic uses One-Hot for up to 10 unique categories "
+                    "and Frequency Encoding for more than 10."
+                ),
+                key="ml_encoding_method"
+            )
+
+            # Collect category order for ordinal encoding
+            ordinal_orders = {}
+
+            if encoding_method == "Ordinal" and categorical_columns:
+
+                st.info(
+                    "Enter each column's categories from lowest to highest. "
+                    "Use the exact values present in your dataset."
+                )
+
+                for column in categorical_columns:
+                    ordinal_orders[column] = st.text_input(
+                        f"Category order for {column}",
+                        placeholder="Example: Small, Medium, Large",
+                        key=f"ordinal_order_{column}"
+                    )
+
+            # Run preprocessing
+            if st.button("Run ML Preprocessing", key="run_ml_preprocessing"):
+
+                try:
+
+                    result = preprocess_for_ml(
+                        df,
+                        encoding_method=encoding_method,
+                        ordinal_orders=ordinal_orders
+                    )
+
+                    # Step 12: Show missing values before imputation
+                    st.subheader("Step 12 — Original Missing Value Report")
+
+                    st.write(
+                        "Missing values below are counted before imputation."
+                    )
+
+                    st.dataframe(
+                        result["missing_report"],
+                        use_container_width=True
+                    )
+
+                    # Show the selected encoding for each column
+                    st.subheader("Encoding Summary")
+
+                    if not result["encoding_details"].empty:
+
+                        st.dataframe(
+                            result["encoding_details"],
+                            use_container_width=True
+                        )
+
+                    else:
+
+                        st.info("No categorical columns were found.")
+
+                    # Show final processed dataset
+                    st.subheader("Processed ML Dataset")
+
+                    st.write(
+                        "Missing values have been handled, categorical "
+                        "features encoded, and numerical features scaled."
+                    )
+
+                    st.dataframe(
+                        result["processed_data"],
+                        use_container_width=True
+                    )
+
+                    st.success("ML preprocessing completed successfully!")
+
+                    # Download the processed data
+                    csv_data = result["processed_data"].to_csv(index=False)
+
+                    st.download_button(
+                        label="Download Processed Dataset",
+                        data=csv_data,
+                        file_name="processed_ml_dataset.csv",
+                        mime="text/csv",
+                        key="download_processed_ml_dataset"
+                    )
+
+                except ValueError as error:
+
+                    st.warning(str(error))
 
     # Error Handling
     except Exception as e:
