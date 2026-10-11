@@ -1,30 +1,41 @@
+
 import pandas as pd
 
 
 def detect_data_type_problems(df):
-
     problems = []
 
     for column in df.columns:
+        series = df[column]
 
-        # Try converting the column to numeric
-        converted = pd.to_numeric(df[column], errors="coerce")
+        # Check whether the column contains numeric values.
+        converted = pd.to_numeric(series, errors="coerce")
 
-        for index in df.index:
+        # If the column has no numeric values, treat it as a text column.
+        # Do not flag ordinary text such as names and cities.
+        non_missing = series.notna()
 
-            original_value = df.loc[index, column]
+        if not non_missing.any():
+            continue
 
-            if pd.isna(original_value):
-                continue
+        if converted[non_missing].notna().sum() == 0:
+            continue
 
-            # If conversion failed, the value is not numeric
-            if pd.isna(converted.loc[index]):
+        # Flag values that cannot be converted when the column
+        # otherwise contains numeric data.
+        invalid_mask = non_missing & converted.isna()
 
-                problems.append({
-                    "Row": index + 1,
-                    "Column": column,
-                    "Value": original_value,
-                    "Status": "Data Type Problem"
-                })
+        for index in df.index[invalid_mask]:
+            original_value = series.loc[index]
 
-    return pd.DataFrame(problems)
+            problems.append({
+                "Row": df.index.get_loc(index) + 1,
+                "Column": column,
+                "Value": original_value,
+                "Status": "Data Type Problem",
+            })
+
+    return pd.DataFrame(
+        problems,
+        columns=["Row", "Column", "Value", "Status"],
+    )

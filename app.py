@@ -213,50 +213,37 @@ if uploaded_file is not None:
             st.success(
                 "No data type problems found."
             )
-
         # FORMAT VALIDATION
         st.subheader("Format Validation")
 
         format_problems = detect_format_problems(df)
 
         if not format_problems.empty:
-
             st.warning(
                 f"{len(format_problems)} format problem(s) detected."
             )
-
             st.dataframe(
                 format_problems,
                 use_container_width=True
             )
-
         else:
+            st.success("No format problems found.")
 
-            st.success(
-                "No format problems found."
+        # CONSISTENCY DETECTION
+        st.subheader("Consistency Detection")
+
+        inconsistencies = detect_inconsistent_values(df)
+
+        if not inconsistencies.empty:
+            st.warning(
+                f"{len(inconsistencies)} inconsistent representation(s) detected."
             )
-
-            # CONSISTENCY DETECTION
-            st.subheader("Consistency Detection")
-
-            inconsistencies = detect_inconsistent_values(df)
-
-            if not inconsistencies.empty:
-
-                st.warning(
-                    f"{len(inconsistencies)} inconsistent representation(s) detected."
-                )
-
-                st.dataframe(
-                    inconsistencies,
-                    use_container_width=True
-                )
-
-            else:
-
-                st.success(
-                    "No consistency problems found."
-                )
+            st.dataframe(
+                inconsistencies,
+                use_container_width=True
+            )
+        else:
+            st.success("No consistency problems found.")
 
         # PHASE 5 — STATISTICAL OUTLIER DETECTION
         st.header("Statistical Outlier Detection")
