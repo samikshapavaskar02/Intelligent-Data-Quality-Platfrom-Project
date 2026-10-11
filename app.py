@@ -26,12 +26,157 @@ from modules.statistical_outliers import detect_iqr_outliers
 
 from modules.ml_preprocessing import (identify_columns,preprocess_for_ml)
 
+from modules.unified_dashboard import (
+    build_unified_table,
+    count_by_issue_type,
+    filter_unified_table,
+    get_dataset_fingerprint,
+    get_unified_summary,
+    prepare_display_table,
+    run_anomaly_sources
+)
+
+from modules.unified_results import (
+    SRC_MISSING,
+    SRC_DUPLICATES,
+    SRC_INVALID,
+    SRC_DATA_TYPE,
+    SRC_FORMAT,
+    SRC_CONSISTENCY,
+    SRC_IQR
+)
+
 # Page Configuration
 st.set_page_config(
     page_title="Intelligent Data Quality Platform",
     page_icon="📊",
     layout="wide"
 )
+
+
+# Unified Results helpers
+@st.cache_data(show_spinner=False)
+def get_anomaly_sources(_data, fingerprint):
+    """Run Isolation Forest + LOF once per dataset (cached between reruns).
+
+    The cache key is the full-content fingerprint; ``_data`` is not hashed.
+    """
+    return run_anomaly_sources(_data)
+
+
+def render_unified_results(data, quality_results):
+    """Show every finding from every detector in one consistent table."""
+
+    st.write(
+        "All findings from the checks above in one table. "
+        "Data quality problems are actual errors. IQR outliers and "
+        "ML anomalies are unusual records to review; they are not "
+        "automatically wrong and nothing is removed."
+    )
+
+    if data.empty:
+        st.info("The uploaded dataset is empty, so there are no findings to combine.")
+        return
+
+    include_ml = st.checkbox(
+        "Include ML anomaly detection (Isolation Forest + LOF)",
+        value=True,
+        help=(
+            "Runs both models with their default settings. "
+            "Untick to show the data quality and IQR findings only."
+        ),
+        key="unified_include_ml"
+    )
+
+    anomaly_sources = {}
+
+    if include_ml:
+
+        with st.spinner("Running anomaly detection..."):
+            anomaly_sources, anomaly_notes = get_anomaly_sources(
+                data,
+                get_dataset_fingerprint(data)
+            )
+
+        for note in anomaly_notes:
+            st.info(note)
+
+    unified, build_notes = build_unified_table(
+        data,
+        quality_results,
+        anomaly_sources
+    )
+
+    for note in build_notes:
+        st.warning(note)
+
+    if unified.empty:
+        st.success("No findings detected by the supported checks.")
+        return
+
+    # Summary
+    summary = get_unified_summary(unified)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Data Quality Findings", summary["data_quality"])
+
+    with col2:
+        st.metric("IQR Outliers", summary["statistical_outliers"])
+
+    with col3:
+        st.metric("ML Records to Review", summary["ml_records_to_review"])
+
+    with col4:
+        st.metric("Total Findings", summary["total_findings"])
+
+    st.subheader("Findings by Issue Type")
+
+    st.dataframe(
+        count_by_issue_type(unified),
+        use_container_width=True
+    )
+
+    # Filters
+    st.subheader("All Findings")
+
+    available_categories = list(unified["Category"].unique())
+
+    selected_categories = st.multiselect(
+        "Category",
+        available_categories,
+        default=available_categories
+    )
+
+    available_issue_types = list(
+        unified.loc[
+            unified["Category"].isin(selected_categories),
+            "Issue Type"
+        ].unique()
+    )
+
+    selected_issue_types = st.multiselect(
+        "Issue Type",
+        available_issue_types,
+        default=available_issue_types
+    )
+
+    filtered = filter_unified_table(
+        unified,
+        categories=selected_categories,
+        issue_types=selected_issue_types
+    )
+
+    if filtered.empty:
+        st.info("No findings match the selected filters.")
+        return
+
+    st.dataframe(
+        prepare_display_table(filtered),
+        use_container_width=True
+    )
+
 
 # Title
 st.title("Intelligent Data Quality & Anomaly Platform")
@@ -398,6 +543,22 @@ if uploaded_file is not None:
                 except ValueError as error:
 
                     st.warning(str(error))
+
+        # PHASE 11 — UNIFIED RESULTS
+        st.header("🧩 Unified Results")
+
+        render_unified_results(
+            df,
+            {
+                SRC_MISSING: missing_values,
+                SRC_DUPLICATES: duplicate_rows,
+                SRC_INVALID: invalid_values,
+                SRC_DATA_TYPE: data_type_problems,
+                SRC_FORMAT: format_problems,
+                SRC_CONSISTENCY: inconsistencies,
+                SRC_IQR: outliers
+            }
+        )
 
     # Error Handling
     except Exception as e:
