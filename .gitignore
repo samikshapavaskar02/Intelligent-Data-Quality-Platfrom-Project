@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .idea/
+.vscode/
 .env
 data/raw/
 data/processed/
