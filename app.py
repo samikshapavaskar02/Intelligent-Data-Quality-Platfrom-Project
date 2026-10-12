@@ -405,6 +405,145 @@ def dataframe_to_json_records(dataframe):
     ]
 
 
+def render_analysis_history():
+    """Display saved analyses and their stored details."""
+
+    st.header("📚 Saved Analysis History")
+
+    try:
+        history = get_analysis_history(limit=50)
+    except Exception as error:
+        st.error(
+            "Could not load analysis history from PostgreSQL. "
+            f"Error: {type(error).__name__}: {error}"
+        )
+        return
+
+    if not history:
+        st.info(
+            "No saved analyses found. Upload a dataset and click "
+            "'Save Analysis to Database' to create your first record."
+        )
+        return
+
+    # Show recent analyses in a table.
+    history_table = pd.DataFrame(history)
+
+    if "created_at" in history_table.columns:
+        history_table["created_at"] = pd.to_datetime(
+            history_table["created_at"], errors="coerce"
+        ).astype(str)
+
+    st.subheader("Recent Analyses")
+    if "overall_score" not in history_table.columns:
+     history_table["overall_score"] = None
+    st.dataframe(
+        
+        history_table[
+            [
+                "id",
+                "created_at",
+                "filename",
+                "row_count",
+                "column_count",
+                "overall_score",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # Let the user choose one saved analysis.
+    labels = {
+        int(item["id"]): (
+            f'ID {item["id"]} — {item["filename"]} '
+            f'({item["row_count"]} rows)'
+        )
+        for item in history
+    }
+
+    selected_id = st.selectbox(
+        "Select an analysis to inspect",
+        options=list(labels.keys()),
+        format_func=lambda analysis_id: labels[analysis_id],
+        key="saved_analysis_selected_id",
+    )
+
+    if st.button("View Selected Analysis", key="view_saved_analysis"):
+        st.session_state["view_analysis_id"] = selected_id
+
+    analysis_id = st.session_state.get("view_analysis_id")
+
+    if analysis_id is None:
+        st.caption("Select an analysis and click View Selected Analysis.")
+        return
+
+    # If the selected analysis is no longer in the current history, stop.
+    if analysis_id not in labels:
+        st.info("The selected analysis is no longer in the recent history.")
+        return
+
+    try:
+        details = get_analysis_details(analysis_id)
+    except Exception as error:
+        st.error(
+            "Could not load the selected analysis. "
+            f"Error: {type(error).__name__}: {error}"
+        )
+        return
+
+    if details is None:
+        st.warning("The selected analysis was not found in the database.")
+        return
+
+    st.subheader(f"Analysis Details — ID {details['id']}")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Rows", details["row_count"])
+
+    with col2:
+        st.metric("Columns", details["column_count"])
+
+    with col3:
+        score = details.get("quality_score")
+        overall_score = score.get("overall_score") if score else None
+        st.metric(
+            "Quality Score",
+            "Not available"
+            if overall_score is None
+            else f"{overall_score}/100",
+        )
+
+    st.write("**Filename:**", details["filename"])
+    st.write("**Created at:**", str(details["created_at"]))
+
+    with st.expander("Dataset Metadata"):
+        st.json(details.get("metadata") or {})
+
+    st.subheader("Saved Quality Issues")
+    issues = details.get("quality_issues", [])
+    if issues:
+        st.dataframe(pd.DataFrame(issues), use_container_width=True)
+    else:
+        st.info("No quality issues were saved for this analysis.")
+
+    st.subheader("Saved Anomaly Results")
+    anomalies = details.get("anomaly_results", [])
+    if anomalies:
+        st.dataframe(pd.DataFrame(anomalies), use_container_width=True)
+    else:
+        st.info("No anomaly results were saved for this analysis.")
+
+    st.subheader("Saved Cleaning Actions")
+    actions = details.get("cleaning_actions", [])
+    if actions:
+        st.dataframe(pd.DataFrame(actions), use_container_width=True)
+    else:
+        st.info("No cleaning actions have been saved for this analysis.")
+
+
 def render_unified_results(data, quality_results,filename="uploaded_dataset"):
     """Show every finding from every detector in one consistent table."""
 
@@ -1539,7 +1678,8 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"Error while processing dataset: {e}")
         st.exception(e)
-
+    # PHASE 16 — DATABASE: ANALYSIS HISTORY
+render_analysis_history()
 
 # PHASE 18 — ML EVALUATION
 st.header("🧪 ML Evaluation")

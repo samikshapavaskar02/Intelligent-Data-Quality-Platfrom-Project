@@ -249,19 +249,23 @@ if __name__ == "__main__":
         print(f"Database setup failed: {type(exc).__name__}: {exc}")
 
 
+
 def get_analysis_history(limit=50):
-    """Return the most recent saved analyses."""
+    """Return the most recent saved analyses with their quality scores."""
     limit = max(1, min(int(limit), 500))
 
     query = """
         SELECT
-            id,
-            created_at,
-            filename,
-            row_count,
-            column_count,
-            metadata
-        FROM analyses
+            a.id,
+            a.created_at,
+            a.filename,
+            a.row_count,
+            a.column_count,
+            a.metadata,
+            qs.overall_score
+        FROM analyses AS a
+        LEFT JOIN quality_scores AS qs
+            ON qs.analysis_id = a.id
         ORDER BY created_at DESC, id DESC
         LIMIT %s
     """
@@ -278,6 +282,7 @@ def get_analysis_history(limit=50):
         "row_count",
         "column_count",
         "metadata",
+        "overall_score",
     ]
 
     return [dict(zip(columns, row)) for row in rows]
