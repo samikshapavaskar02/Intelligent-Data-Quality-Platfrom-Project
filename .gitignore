@@ -1,8 +1,23 @@
+
+# Python virtual environment
 .venv/
+
+# Python cache files
 __pycache__/
 *.pyc
+
+# IDE settings
 .idea/
 .vscode/
+
+# Environment variables and secrets
 .env
+.env.*
+!.env.example
+
+# Dataset folders
 data/raw/
 data/processed/
+
+# Local database files
+*.db

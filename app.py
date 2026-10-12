@@ -84,6 +84,21 @@ from modules.report_builder import (
     build_quality_report
 )
 
+
+from modules.database import (
+    initialize_database,
+    create_analysis,
+    save_quality_score,
+    save_quality_issues,
+    save_anomaly_results,
+    save_cleaning_action,
+    get_analysis_history,
+    get_analysis_details,
+    test_connection,
+    save_analysis_bundle,
+)
+
+
 # Page Configuration
 st.set_page_config(
     page_title="Intelligent Data Quality Platform",
@@ -370,7 +385,27 @@ def render_report_downloads(score_result, anomaly_sources, include_ml):
                 )
 
 
-def render_unified_results(data, quality_results):
+def dataframe_to_json_records(dataframe):
+    """Convert a DataFrame into JSON-safe records for PostgreSQL."""
+    if dataframe is None or dataframe.empty:
+        return []
+
+    records = dataframe.astype(object).where(
+        pd.notna(dataframe), None
+    ).to_dict(orient="records")
+
+    return [
+        {
+            str(key): (
+                value.item() if hasattr(value, "item") else value
+            )
+            for key, value in record.items()
+        }
+        for record in records
+    ]
+
+
+def render_unified_results(data, quality_results,filename="uploaded_dataset"):
     """Show every finding from every detector in one consistent table."""
 
     st.write(
@@ -432,6 +467,93 @@ def render_unified_results(data, quality_results):
         render_quality_score(score_result)
 
     render_report_downloads(score_result, anomaly_sources, include_ml)
+    
+    # Save the current dataset analysis to PostgreSQL
+    st.subheader("Analysis History")
+
+    if st.button("Save Analysis to Database", key="save_analysis_button"):
+        try:
+            # Prepare quality score
+            score_data = None
+
+            if score_result is not None:
+                score_data = {
+                    "overall_score": getattr(
+                        score_result, "overall_score", None
+                    ),
+                    "dimensions": dataframe_to_json_records(
+                        getattr(score_result, "dimensions", None)
+                    ),
+                    "severity_summary": dataframe_to_json_records(
+                        getattr(score_result, "severity_summary", None)
+                    ),
+                }
+
+            # Save actual data-quality findings only.
+            # IQR and ML anomalies are stored separately.
+            quality_issues = []
+
+            for _, finding in unified.iterrows():
+                if finding.get("Category") != "Data Quality":
+                    continue
+
+                quality_issues.append({
+                    "issue_type": str(finding.get("Issue Type", "Unknown")),
+                    "column_name": (
+                        None if pd.isna(finding.get("Column"))
+                        else str(finding.get("Column"))
+                    ),
+                    "issue_count": 1,
+                    "severity": (
+                        None if pd.isna(finding.get("Severity"))
+                        else str(finding.get("Severity"))
+                    ),
+                    "details": {
+                        "method": finding.get("Method"),
+                        "scope": finding.get("Scope"),
+                        "record_id": finding.get("Record ID"),
+                        "row_position": finding.get("Row Position"),
+                        "value": finding.get("Value"),
+                        "status": finding.get("Status"),
+                        "details": finding.get("Details"),
+                    },
+                })
+
+            # Save each record from the combined anomaly output.
+            anomaly_results = []
+            combined = anomaly_sources.get("anomaly_analysis")
+
+            if combined is not None and not combined.empty:
+                for record_id, row in combined.iterrows():
+                    anomaly_results.append({
+                        "record_id": str(record_id),
+                        "isolation_forest_result": row.get("IF Result"),
+                        "lof_result": row.get("LOF Result"),
+                        "isolation_forest_score": None,
+                        "lof_score": None,
+                        "status": row.get("Status"),
+                        "details": {},
+                    })
+
+            analysis_id = save_analysis_bundle(
+                filename=filename,
+                row_count=len(data),
+                column_count=len(data.columns),
+                metadata={
+                    "columns": [str(column) for column in data.columns],
+                    "ml_detection_enabled": include_ml,
+                },
+                quality_score=score_data,
+                quality_issues=quality_issues,
+                anomaly_results=anomaly_results,
+            )
+
+            st.success(
+                f"Analysis saved successfully! Analysis ID: {analysis_id}"
+            )
+
+        except Exception as error:
+            st.error(f"Could not save analysis: {error}")
 
     if unified.empty:
         st.success("No findings detected by the supported checks.")
@@ -1404,7 +1526,8 @@ if uploaded_file is not None:
                 SRC_FORMAT: format_problems,
                 SRC_CONSISTENCY: inconsistencies,
                 SRC_IQR: outliers
-            }
+            },
+            filename=uploaded_file.name
         )
 
         # PHASE 12 — DATA CLEANING
