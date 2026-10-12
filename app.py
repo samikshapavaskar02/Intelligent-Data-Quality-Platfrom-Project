@@ -46,6 +46,14 @@ from modules.unified_results import (
     SRC_IQR
 )
 
+from modules.ml_evaluation import (
+    DEFAULT_ANOMALY_FRACTION,
+    DEFAULT_N_SAMPLES,
+    DEFAULT_RANDOM_STATE,
+    MIN_SAMPLES,
+    run_ml_evaluation
+)
+
 from modules.quality_score import (
     CAP_CRITICAL,
     CAP_HIGH,
@@ -59,6 +67,16 @@ from modules.quality_score import (
     WEIGHTS,
     add_severity_columns,
     calculate_quality_score
+)
+
+from modules.cleaning import (
+    INVALID_CLIP,
+    INVALID_KEEP,
+    INVALID_MISSING,
+    MISSING_DROP,
+    MISSING_FILL,
+    MISSING_KEEP,
+    clean_dataset
 )
 
 # Page Configuration
@@ -396,6 +414,514 @@ def render_unified_results(data, quality_results):
             f'IQR outliers and ML anomalies are shown as "{SEV_REVIEW}" '
             "and are excluded from the score."
         )
+
+
+# Data Cleaning helpers
+INVALID_ACTION_CHOICES = {
+    "Leave unchanged": INVALID_KEEP,
+    "Set invalid values to missing": INVALID_MISSING,
+    "Clip numbers to the allowed range": INVALID_CLIP
+}
+
+MISSING_ACTION_CHOICES = {
+    "Leave unchanged": MISSING_KEEP,
+    "Fill (median for numbers, most frequent value for text)": MISSING_FILL,
+    "Remove rows that contain a missing value": MISSING_DROP
+}
+
+# Keeps the change tables fast to draw on large datasets.
+MAX_CLEANING_ROWS_SHOWN = 1000
+
+
+def render_cleaning_operations(data, rules):
+    """Choose, preview and apply cleaning on a separate copy of the dataset."""
+
+    if not data.columns.is_unique:
+        st.warning(
+            "Cleaning needs unique column names, but this dataset has "
+            "repeated column names."
+        )
+        return
+
+    st.write(
+        "Choose the cleaning operations to use. A preview of the changes is "
+        "shown first. Cleaning is applied to a separate copy; your uploaded "
+        "dataset is never changed."
+    )
+
+    active_rules = {
+        column: limits
+        for column, limits in rules.items()
+        if column in data.columns
+    }
+
+    st.subheader("Cleaning Options")
+
+    # Duplicate rows
+    duplicate_count = int(get_duplicate_count(data))
+
+    remove_duplicates = st.checkbox(
+        "Remove exact duplicate rows",
+        value=False,
+        help=(
+            f"{duplicate_count} duplicate row(s) found. "
+            "The first occurrence of each row is kept."
+        ),
+        key="clean_remove_duplicates"
+    )
+
+    # Invalid values
+    if active_rules:
+
+        st.caption(
+            "Invalid-value rules in use: "
+            + ", ".join(
+                f"{column} ({limits[0]} to {limits[1]})"
+                for column, limits in active_rules.items()
+            )
+        )
+
+        invalid_label = st.selectbox(
+            "Invalid values",
+            list(INVALID_ACTION_CHOICES),
+            key="clean_invalid_action"
+        )
+
+        invalid_action = INVALID_ACTION_CHOICES[invalid_label]
+
+    else:
+
+        st.info(
+            "Invalid-value correction is not available: none of the "
+            f"columns with rules ({', '.join(rules)}) are in this dataset."
+        )
+
+        invalid_action = INVALID_KEEP
+
+    # Missing values
+    missing_label = st.selectbox(
+        "Missing values",
+        list(MISSING_ACTION_CHOICES),
+        key="clean_missing_action",
+        help="Blank and whitespace-only cells count as missing."
+    )
+
+    missing_action = MISSING_ACTION_CHOICES[missing_label]
+
+    if (
+        not remove_duplicates
+        and invalid_action == INVALID_KEEP
+        and missing_action == MISSING_KEEP
+    ):
+        st.info(
+            "No cleaning operations selected. Choose at least one option "
+            "to preview the changes. The dataset has not been changed."
+        )
+        return
+
+    # Preview (computed on a copy; nothing is applied yet)
+    try:
+        result = clean_dataset(
+            data,
+            remove_duplicates=remove_duplicates,
+            invalid_action=invalid_action,
+            invalid_rules=active_rules,
+            missing_action=missing_action
+        )
+    except (TypeError, ValueError) as error:
+        st.error(f"The cleaning preview could not be created: {error}")
+        return
+
+    st.subheader("Preview of Changes")
+
+    st.caption("Nothing has been applied yet.")
+
+    for note in result.notes:
+        st.warning(note)
+
+    if not result.has_changes:
+        st.success(
+            "The selected operations found nothing to change in this dataset."
+        )
+        return
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Rows Before", result.rows_before)
+
+    with col2:
+        st.metric(
+            "Rows After",
+            result.rows_after,
+            delta=result.rows_after - result.rows_before,
+            delta_color="off"
+        )
+
+    with col3:
+        st.metric("Cells Changed", result.cells_changed)
+
+    st.dataframe(
+        result.summary,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    if not result.removed_rows.empty:
+
+        with st.expander(
+            f"Rows that would be removed ({len(result.removed_rows)})"
+        ):
+
+            st.dataframe(
+                result.removed_rows.head(MAX_CLEANING_ROWS_SHOWN),
+                use_container_width=True
+            )
+
+    if not result.changes.empty:
+
+        with st.expander(
+            f"Cell changes ({len(result.changes)})"
+        ):
+
+            st.dataframe(
+                result.changes.head(MAX_CLEANING_ROWS_SHOWN),
+                use_container_width=True,
+                hide_index=True
+            )
+
+    if (
+        len(result.removed_rows) > MAX_CLEANING_ROWS_SHOWN
+        or len(result.changes) > MAX_CLEANING_ROWS_SHOWN
+    ):
+        st.caption(
+            f"Only the first {MAX_CLEANING_ROWS_SHOWN} rows of each change "
+            "table are shown. All changes are applied."
+        )
+
+    # Apply. The applied result is kept in session state so it stays visible
+    # when other widgets rerun the page, and is only shown while the dataset
+    # and the selected options are the same as when it was applied.
+    # Stored as text so the comparison below never depends on the type that
+    # get_dataset_fingerprint returns.
+    signature = repr((
+        get_dataset_fingerprint(data),
+        (remove_duplicates, invalid_action, missing_action),
+        tuple(
+            sorted(
+                (column, tuple(limits))
+                for column, limits in active_rules.items()
+            )
+        )
+    ))
+
+    if st.button("Apply Cleaning", key="clean_apply"):
+
+        st.session_state["cleaning_applied"] = {
+            "signature": signature,
+            "result": result
+        }
+
+    applied = st.session_state.get("cleaning_applied")
+
+    if applied is None:
+        return
+
+    if applied["signature"] != signature:
+        st.info(
+            "The dataset or the selected options changed since cleaning was "
+            "last applied. Click Apply Cleaning to apply the current "
+            "selection."
+        )
+        return
+
+    cleaned = applied["result"].cleaned
+
+    st.subheader("Cleaned Dataset")
+
+    st.success(
+        "Cleaning was applied to a separate copy. "
+        "Your uploaded dataset was not changed."
+    )
+
+    if cleaned.empty:
+        st.warning(
+            "All rows were removed by the selected options, so there is no "
+            "cleaned dataset to show or download."
+        )
+        return
+
+    st.dataframe(
+        cleaned,
+        use_container_width=True
+    )
+
+    st.download_button(
+        label="Download Cleaned Dataset",
+        data=cleaned.to_csv(index=False),
+        file_name="cleaned_dataset.csv",
+        mime="text/csv",
+        key="download_cleaned_dataset"
+    )
+
+
+def render_review_suggestions(data, iqr_outliers):
+    """Show IQR outliers and ML anomalies as review suggestions only."""
+
+    st.subheader("Anomaly Review Suggestions")
+
+    st.write(
+        "IQR outliers and ML anomalies are unusual records to review, not "
+        "errors. They are never removed or changed by cleaning. Row numbers "
+        "below refer to the uploaded dataset."
+    )
+
+    if isinstance(iqr_outliers, pd.DataFrame) and not iqr_outliers.empty:
+
+        st.info(
+            f"{len(iqr_outliers)} IQR outlier value(s) are suggested "
+            "for review."
+        )
+
+        with st.expander("IQR outliers to review"):
+            st.dataframe(
+                iqr_outliers,
+                use_container_width=True
+            )
+
+    else:
+
+        st.success("No IQR outliers to review.")
+
+    include_ml = st.checkbox(
+        "Also show ML anomaly suggestions (Isolation Forest + LOF)",
+        value=False,
+        help=(
+            "Uses the same cached results as the Unified Results section "
+            "when they are available."
+        ),
+        key="clean_include_ml"
+    )
+
+    if not include_ml:
+        return
+
+    try:
+
+        with st.spinner("Running anomaly detection..."):
+            anomaly_sources, anomaly_notes = get_anomaly_sources(
+                data,
+                get_dataset_fingerprint(data)
+            )
+
+    except (TypeError, ValueError) as error:
+        st.warning(f"ML anomaly suggestions could not be created: {error}")
+        return
+
+    for note in anomaly_notes:
+        st.info(note)
+
+    shown = False
+
+    if isinstance(anomaly_sources, dict):
+
+        for name, frame in anomaly_sources.items():
+
+            if isinstance(frame, pd.DataFrame) and not frame.empty:
+
+                shown = True
+
+                with st.expander(f"{name}: {len(frame)} record(s) to review"):
+                    st.dataframe(
+                        frame,
+                        use_container_width=True
+                    )
+
+    if not shown:
+        st.success("No ML anomalies to review.")
+
+
+def render_data_cleaning(data, rules, iqr_outliers):
+    """Data Cleaning section: operations, preview, apply and review hints."""
+
+    if data.empty:
+        st.info("The uploaded dataset is empty, so there is nothing to clean.")
+        return
+
+    render_cleaning_operations(data, rules)
+
+    render_review_suggestions(data, iqr_outliers)
+
+
+# ML Evaluation helpers
+def render_ml_evaluation():
+    """Compare IQR, Z-score, Isolation Forest and LOF on labelled synthetic data.
+
+    The uploaded dataset is not used. The result is kept in session state so
+    it stays visible when other widgets rerun the page.
+    """
+
+    st.write(
+        "Compare IQR, Z-score, Isolation Forest and LOF on a synthetic "
+        "dataset with known anomalies. This does not use your uploaded "
+        "dataset."
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        n_samples = st.number_input(
+            "Number of records",
+            min_value=MIN_SAMPLES,
+            max_value=5000,
+            value=DEFAULT_N_SAMPLES,
+            step=100,
+            key="ml_eval_records"
+        )
+
+    with col2:
+        anomaly_percent = st.slider(
+            "Known anomalies (%)",
+            min_value=1,
+            max_value=20,
+            value=int(DEFAULT_ANOMALY_FRACTION * 100),
+            key="ml_eval_anomaly_percent"
+        )
+
+    with col3:
+        random_state = st.number_input(
+            "Random seed",
+            min_value=0,
+            value=DEFAULT_RANDOM_STATE,
+            step=1,
+            key="ml_eval_seed"
+        )
+
+    contamination_choice = st.radio(
+        "Isolation Forest and LOF contamination",
+        ["Automatic (model default)", "True anomaly rate"],
+        horizontal=True,
+        key="ml_eval_contamination",
+        help=(
+            "IQR and Z-score are fixed rules and cannot use this setting. "
+            "The true anomaly rate gives Isolation Forest and LOF "
+            "information the two rules do not have."
+        )
+    )
+
+    if st.button("Run ML Evaluation", key="run_ml_evaluation"):
+
+        try:
+
+            with st.spinner("Evaluating the four methods..."):
+
+                st.session_state["ml_evaluation_result"] = run_ml_evaluation(
+                    n_samples=int(n_samples),
+                    anomaly_fraction=anomaly_percent / 100,
+                    random_state=int(random_state),
+                    use_true_rate=(contamination_choice == "True anomaly rate")
+                )
+
+        except (TypeError, ValueError) as error:
+
+            st.session_state.pop("ml_evaluation_result", None)
+            st.error(f"ML evaluation failed: {error}")
+
+    result = st.session_state.get("ml_evaluation_result")
+
+    if result is None:
+        st.info("Choose the settings and click Run ML Evaluation.")
+        return
+
+    settings = result.settings
+
+    st.caption(
+        f"{settings['records']} records, {settings['known_anomalies']} known "
+        f"anomalies ({settings['anomaly_rate']:.1%}), seed "
+        f"{settings['random_state']}, Isolation Forest / LOF contamination: "
+        f"{settings['contamination']}."
+    )
+
+    for note in result.warnings:
+        st.warning(note)
+
+    if result.metrics.empty:
+        st.error("No method could be evaluated.")
+        return
+
+    st.subheader("Method Comparison")
+
+    st.dataframe(
+        result.metrics,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    best = result.metrics.loc[result.metrics["F1-score"].idxmax()]
+
+    if best["F1-score"] > 0:
+        st.success(
+            f"Highest F1-score: {best['Method']} ({best['F1-score']:.4f})"
+        )
+
+    st.subheader("Precision, Recall and F1-score")
+
+    st.bar_chart(
+        result.metrics.set_index("Method")[["Precision", "Recall", "F1-score"]]
+    )
+
+    st.subheader("Execution Time")
+
+    st.bar_chart(
+        result.metrics.set_index("Method")["Execution Time (s)"]
+    )
+
+    st.caption(
+        "Mean seconds of the detection step. Preprocessing shared by "
+        "Isolation Forest and LOF took "
+        f"{settings['preprocessing_time_s']} s and is not included."
+    )
+
+    st.subheader("Confusion Matrices")
+
+    matrix_columns = st.columns(len(result.confusion_matrices))
+
+    for column, (method, matrix) in zip(
+        matrix_columns,
+        result.confusion_matrices.items()
+    ):
+
+        with column:
+            st.markdown(f"**{method}**")
+            st.dataframe(matrix)
+
+    if not result.type_recall.empty:
+
+        st.subheader("Share of Each Anomaly Type Detected")
+
+        st.dataframe(
+            result.type_recall,
+            use_container_width=True
+        )
+
+        st.caption(
+            "Extreme: values far outside the normal range. Contextual: "
+            "every value is normal but the combination is not."
+        )
+
+    with st.expander("Synthetic dataset"):
+
+        st.write(result.data["anomaly_type"].value_counts())
+
+        st.dataframe(
+            result.data.head(20),
+            use_container_width=True
+        )
+
+    st.caption(
+        "Results describe this synthetic dataset and seed only; they do "
+        "not guarantee the same ranking on other data."
+    )
 
 
 # Title
@@ -776,7 +1302,18 @@ if uploaded_file is not None:
             }
         )
 
+        # PHASE 12 — DATA CLEANING
+        st.header("🧹 Data Cleaning")
+
+        render_data_cleaning(df, rules, outliers)
+
     # Error Handling
     except Exception as e:
         st.error(f"Error while processing dataset: {e}")
         st.exception(e)
+
+
+# PHASE 18 — ML EVALUATION
+st.header("🧪 ML Evaluation")
+
+render_ml_evaluation()
