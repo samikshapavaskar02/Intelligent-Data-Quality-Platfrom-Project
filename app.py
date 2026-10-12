@@ -46,6 +46,21 @@ from modules.unified_results import (
     SRC_IQR
 )
 
+from modules.quality_score import (
+    CAP_CRITICAL,
+    CAP_HIGH,
+    RATING_BANDS,
+    RATING_NOT_SCORED,
+    SEV_CRITICAL,
+    SEV_HIGH,
+    SEV_LOW,
+    SEV_MEDIUM,
+    SEV_REVIEW,
+    WEIGHTS,
+    add_severity_columns,
+    calculate_quality_score
+)
+
 # Page Configuration
 st.set_page_config(
     page_title="Intelligent Data Quality Platform",
@@ -62,6 +77,176 @@ def get_anomaly_sources(_data, fingerprint):
     The cache key is the full-content fingerprint; ``_data`` is not hashed.
     """
     return run_anomaly_sources(_data)
+
+
+# Data Quality Score helpers
+
+# Rated severities named by modules.quality_score, worst first.
+RATED_SEVERITIES_WORST_FIRST = (
+    SEV_CRITICAL,
+    SEV_HIGH,
+    SEV_MEDIUM,
+    SEV_LOW
+)
+
+# Score notes that are ordinary explanations (shown as neutral information).
+# Every other note from the score module describes a scoring limitation, a
+# partial result or a cap, and is shown as a warning. A note that matches none
+# of these patterns therefore defaults to a warning.
+INFORMATIONAL_NOTE_PATTERNS = (
+    "were rescaled to total 100%",
+    "are on blank cells and are counted once"
+)
+
+
+def get_worst_severity(severity_summary):
+    """Worst rated severity named in the score's severity summary.
+
+    modules.quality_score sorts the summary worst-first, but this does not
+    rely on that order: the worst severity present is chosen with an explicit
+    ranking. Returns None when the summary is missing, empty or names no rated
+    severity, so nothing is ever inferred.
+    """
+    if not isinstance(severity_summary, pd.DataFrame):
+        return None
+
+    if severity_summary.empty or "Severity" not in severity_summary.columns:
+        return None
+
+    present = set(severity_summary["Severity"].dropna())
+
+    for severity in RATED_SEVERITIES_WORST_FIRST:
+        if severity in present:
+            return severity
+
+    return None
+
+
+def is_informational_note(note):
+    """True for ordinary explanations; False for limitations and warnings."""
+    return any(pattern in note for pattern in INFORMATIONAL_NOTE_PATTERNS)
+
+
+def render_quality_score(result):
+    """Show the Data Quality Score block for a QualityScoreResult."""
+
+    st.subheader("Data Quality Score")
+
+    worst_severity = get_worst_severity(result.severity_summary)
+
+    if worst_severity is not None:
+        worst_text = worst_severity
+    elif result.overall_score is None:
+        worst_text = "Not available"
+    else:
+        worst_text = "No rated issues"
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "Overall Score",
+            RATING_NOT_SCORED if result.overall_score is None
+            else f"{result.overall_score} / 100"
+        )
+
+    with col2:
+        st.metric("Rating", result.rating)
+
+    with col3:
+        st.metric("Worst Severity", worst_text)
+
+    with col4:
+        st.metric(
+            "Score Before Limit",
+            RATING_NOT_SCORED if result.raw_score is None
+            else f"{result.raw_score} / 100"
+        )
+
+    # Severity limit (cap)
+    if result.cap_applied:
+
+        st.warning(
+            result.cap_reason
+            or f"The score was limited to {result.cap_limit} because of "
+               "the worst severity found."
+        )
+
+    elif result.cap_limit is not None:
+
+        st.caption(
+            f"A severity limit of {result.cap_limit} applies to this dataset, "
+            "but the score before the limit was already within it."
+        )
+
+    st.caption(
+        f'IQR outliers and ML anomalies are shown as "{SEV_REVIEW}" '
+        "and are never part of the score."
+    )
+
+    st.subheader("Dimension Breakdown")
+
+    st.dataframe(
+        result.dimensions,
+        use_container_width=True
+    )
+
+    st.subheader("Severity Summary")
+
+    if result.severity_summary.empty:
+
+        st.info("No rated issue groups, so there is no severity summary.")
+
+    else:
+
+        st.dataframe(
+            result.severity_summary,
+            use_container_width=True
+        )
+
+    # Notes: the cap explanation is already shown above, so it is not repeated.
+    for note in result.notes:
+
+        if note == result.cap_reason:
+            continue
+
+        if is_informational_note(note):
+            st.info(note)
+        else:
+            st.warning(note)
+
+    with st.expander("How the score is calculated"):
+
+        weights_text = ", ".join(
+            f"{name} {weight * 100:g}%" for name, weight in WEIGHTS.items()
+        )
+
+        band_parts = []
+
+        for position, (lowest, name) in enumerate(RATING_BANDS):
+
+            if position == len(RATING_BANDS) - 1 and lowest <= 0:
+                band_parts.append(
+                    f"{name}: below {RATING_BANDS[position - 1][0]:g}"
+                )
+            else:
+                band_parts.append(f"{name}: {lowest:g} and above")
+
+        st.markdown(
+            "- Each dimension is scored from 0 to 100 as "
+            "100 x (1 - problems / items checked).\n"
+            "- The overall score is the weighted total of the assessed "
+            f"dimensions ({weights_text}). If a dimension cannot be assessed, "
+            "its weight is shared among the others.\n"
+            "- The worst severity found limits the score: a Critical issue "
+            f"caps it at {CAP_CRITICAL}, a High issue at {CAP_HIGH}.\n"
+            "- The score is rounded to one decimal after the limit, and the "
+            f"rating comes from the rounded score ({'; '.join(band_parts)}).\n"
+            f'- IQR outliers and ML anomalies are marked "{SEV_REVIEW}" and '
+            "never change the score.\n"
+            "- This is the project's own scoring method, not an industry "
+            "standard."
+        )
 
 
 def render_unified_results(data, quality_results):
@@ -110,9 +295,37 @@ def render_unified_results(data, quality_results):
     for note in build_notes:
         st.warning(note)
 
+    # Data Quality Score (calculated before the empty-findings check so a
+    # dataset without findings still gets its score)
+    try:
+        score_result = calculate_quality_score(
+            data,
+            quality_results,
+            unified
+        )
+    except (TypeError, ValueError) as error:
+        score_result = None
+        st.warning(f"The data quality score could not be calculated: {error}")
+
+    if score_result is not None:
+        render_quality_score(score_result)
+
     if unified.empty:
         st.success("No findings detected by the supported checks.")
         return
+
+    # Severity and Score Treatment are display-only columns. They are added to
+    # the FULL table (same index as the score) before any filtering.
+    findings_table = unified
+
+    if score_result is not None:
+
+        try:
+            findings_table = add_severity_columns(unified, score_result)
+        except (TypeError, ValueError) as error:
+            st.warning(
+                f"Severity columns could not be added to the table: {error}"
+            )
 
     # Summary
     summary = get_unified_summary(unified)
@@ -163,7 +376,7 @@ def render_unified_results(data, quality_results):
     )
 
     filtered = filter_unified_table(
-        unified,
+        findings_table,
         categories=selected_categories,
         issue_types=selected_issue_types
     )
@@ -176,6 +389,13 @@ def render_unified_results(data, quality_results):
         prepare_display_table(filtered),
         use_container_width=True
     )
+
+    if "Severity" in filtered.columns:
+        st.caption(
+            "Severity and Score Treatment are display-only columns. "
+            f'IQR outliers and ML anomalies are shown as "{SEV_REVIEW}" '
+            "and are excluded from the score."
+        )
 
 
 # Title
@@ -424,11 +644,7 @@ if uploaded_file is not None:
         else:
 
             # Step 11: Identify column types
-            clean_df = df.replace(r"^\s*$", pd.NA, regex=True)
-
-            numerical_columns, categorical_columns = identify_columns(
-                clean_df
-            )
+            numerical_columns, categorical_columns = identify_columns(df)
 
             st.subheader("Step 11 — Automatic Column Identification")
 
@@ -562,7 +778,5 @@ if uploaded_file is not None:
 
     # Error Handling
     except Exception as e:
-
-        st.error(
-            f"Error while processing dataset: {e}"
-        )
+        st.error(f"Error while processing dataset: {e}")
+        st.exception(e)
