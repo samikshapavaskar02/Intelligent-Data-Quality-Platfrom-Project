@@ -18,6 +18,7 @@ MarkupSafe==3.0.3
 narwhals==2.26.0
 numpy==2.4.6
 openpyxl==3.1.5
+xlrd==2.0.2
 packaging==26.3
 pandas==3.0.6
 pillow==12.3.0
