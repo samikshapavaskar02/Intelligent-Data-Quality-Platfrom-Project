@@ -79,6 +79,11 @@ from modules.cleaning import (
     clean_dataset
 )
 
+from modules.report_builder import (
+    build_anomaly_report,
+    build_quality_report
+)
+
 # Page Configuration
 st.set_page_config(
     page_title="Intelligent Data Quality Platform",
@@ -267,6 +272,104 @@ def render_quality_score(result):
         )
 
 
+def render_report_downloads(score_result, anomaly_sources, include_ml):
+    """Download buttons for the quality report and the anomaly report.
+
+    Both reports are built from results the page already has (the data
+    quality score and the cached anomaly results of the UPLOADED dataset).
+    Nothing is recalculated here, and the synthetic ML Evaluation data is
+    never used.
+    """
+
+    st.subheader("Download Reports")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        if score_result is None:
+
+            st.info(
+                "The quality report is not available because the data "
+                "quality score could not be calculated."
+            )
+
+        else:
+
+            try:
+                quality_report, quality_notes = build_quality_report(
+                    score_result
+                )
+
+            except (TypeError, ValueError) as error:
+                st.warning(f"The quality report could not be built: {error}")
+
+            else:
+
+                for note in quality_notes:
+                    st.info(note)
+
+                st.download_button(
+                    label="Download Quality Report",
+                    data=quality_report.to_csv(index=False),
+                    file_name="quality_report.csv",
+                    mime="text/csv",
+                    key="download_quality_report"
+                )
+
+                st.caption(
+                    "One row per rated issue group from the Severity Summary. "
+                    "Percentage is the share of the units checked. IQR "
+                    "outliers and ML anomalies are not included."
+                )
+
+    with col2:
+
+        if not include_ml:
+
+            st.info(
+                "The anomaly report is not available because ML anomaly "
+                "detection is switched off above."
+            )
+
+        elif not anomaly_sources:
+
+            st.info(
+                "The anomaly report is not available because anomaly "
+                "detection did not run for this dataset."
+            )
+
+        else:
+
+            try:
+                anomaly_report, anomaly_notes = build_anomaly_report(
+                    anomaly_sources
+                )
+
+            except (TypeError, ValueError) as error:
+                st.warning(f"The anomaly report could not be built: {error}")
+
+            else:
+
+                for note in anomaly_notes:
+                    st.info(note)
+
+                st.download_button(
+                    label="Download Anomaly Report",
+                    data=anomaly_report.to_csv(index=False),
+                    file_name="anomaly_report.csv",
+                    mime="text/csv",
+                    key="download_anomaly_report"
+                )
+
+                st.caption(
+                    "One row per record. The Isolation Forest and LOF scores "
+                    "are on different scales and are not combined; higher "
+                    "means more unusual. Flagged records are for review, "
+                    "not automatic errors."
+                )
+
+
 def render_unified_results(data, quality_results):
     """Show every finding from every detector in one consistent table."""
 
@@ -327,6 +430,8 @@ def render_unified_results(data, quality_results):
 
     if score_result is not None:
         render_quality_score(score_result)
+
+    render_report_downloads(score_result, anomaly_sources, include_ml)
 
     if unified.empty:
         st.success("No findings detected by the supported checks.")
