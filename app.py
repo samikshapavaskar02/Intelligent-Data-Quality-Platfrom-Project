@@ -84,6 +84,10 @@ from modules.report_builder import (
     build_quality_report
 )
 
+from modules.analysis_persistence import (
+    get_or_create_analysis_id,
+    persist_applied_cleaning,
+)
 
 from modules.database import (
     initialize_database,
@@ -91,7 +95,6 @@ from modules.database import (
     save_quality_score,
     save_quality_issues,
     save_anomaly_results,
-    save_cleaning_action,
     get_analysis_history,
     get_analysis_details,
     test_connection,
@@ -606,89 +609,97 @@ def render_unified_results(data, quality_results,filename="uploaded_dataset"):
         render_quality_score(score_result)
 
     render_report_downloads(score_result, anomaly_sources, include_ml)
-    
+
+    dataset_fingerprint = get_dataset_fingerprint(data)
+    score_data = None
+
+    if score_result is not None:
+        score_data = {
+            "overall_score": getattr(score_result, "overall_score", None),
+            "dimensions": dataframe_to_json_records(
+                getattr(score_result, "dimensions", None)
+            ),
+            "severity_summary": dataframe_to_json_records(
+                getattr(score_result, "severity_summary", None)
+            ),
+        }
+
+    # Keep the save payload available to the cleaning section later on the
+    # page, so Apply Cleaning can ensure there is a saved analysis to attach to.
+    quality_issues = []
+
+    for _, finding in unified.iterrows():
+        if finding.get("Category") != "Data Quality":
+            continue
+
+        quality_issues.append({
+            "issue_type": str(finding.get("Issue Type", "Unknown")),
+            "column_name": (
+                None if pd.isna(finding.get("Column"))
+                else str(finding.get("Column"))
+            ),
+            "issue_count": 1,
+            "severity": (
+                None if pd.isna(finding.get("Severity"))
+                else str(finding.get("Severity"))
+            ),
+            "details": {
+                "method": finding.get("Method"),
+                "scope": finding.get("Scope"),
+                "record_id": finding.get("Record ID"),
+                "row_position": finding.get("Row Position"),
+                "value": finding.get("Value"),
+                "status": finding.get("Status"),
+                "details": finding.get("Details"),
+            },
+        })
+
+    anomaly_results = []
+    combined = anomaly_sources.get("anomaly_analysis")
+
+    if combined is not None and not combined.empty:
+        for record_id, row in combined.iterrows():
+            anomaly_results.append({
+                "record_id": str(record_id),
+                "isolation_forest_result": row.get("IF Result"),
+                "lof_result": row.get("LOF Result"),
+                "isolation_forest_score": None,
+                "lof_score": None,
+                "status": row.get("Status"),
+                "details": {},
+            })
+
+    analysis_payload = {
+        "filename": filename,
+        "row_count": len(data),
+        "column_count": len(data.columns),
+        "metadata": {
+            "columns": [str(column) for column in data.columns],
+            "ml_detection_enabled": include_ml,
+            "dataset_fingerprint": dataset_fingerprint,
+        },
+        "quality_score": score_data,
+        "quality_issues": quality_issues,
+        "anomaly_results": anomaly_results,
+    }
+    analysis_context = {
+        "fingerprint": dataset_fingerprint,
+        "analysis_payload": analysis_payload,
+    }
+
     # Save the current dataset analysis to PostgreSQL
     st.subheader("Analysis History")
 
     if st.button("Save Analysis to Database", key="save_analysis_button"):
         try:
-            # Prepare quality score
-            score_data = None
-
-            if score_result is not None:
-                score_data = {
-                    "overall_score": getattr(
-                        score_result, "overall_score", None
-                    ),
-                    "dimensions": dataframe_to_json_records(
-                        getattr(score_result, "dimensions", None)
-                    ),
-                    "severity_summary": dataframe_to_json_records(
-                        getattr(score_result, "severity_summary", None)
-                    ),
-                }
-
-            # Save actual data-quality findings only.
-            # IQR and ML anomalies are stored separately.
-            quality_issues = []
-
-            for _, finding in unified.iterrows():
-                if finding.get("Category") != "Data Quality":
-                    continue
-
-                quality_issues.append({
-                    "issue_type": str(finding.get("Issue Type", "Unknown")),
-                    "column_name": (
-                        None if pd.isna(finding.get("Column"))
-                        else str(finding.get("Column"))
-                    ),
-                    "issue_count": 1,
-                    "severity": (
-                        None if pd.isna(finding.get("Severity"))
-                        else str(finding.get("Severity"))
-                    ),
-                    "details": {
-                        "method": finding.get("Method"),
-                        "scope": finding.get("Scope"),
-                        "record_id": finding.get("Record ID"),
-                        "row_position": finding.get("Row Position"),
-                        "value": finding.get("Value"),
-                        "status": finding.get("Status"),
-                        "details": finding.get("Details"),
-                    },
-                })
-
-            # Save each record from the combined anomaly output.
-            anomaly_results = []
-            combined = anomaly_sources.get("anomaly_analysis")
-
-            if combined is not None and not combined.empty:
-                for record_id, row in combined.iterrows():
-                    anomaly_results.append({
-                        "record_id": str(record_id),
-                        "isolation_forest_result": row.get("IF Result"),
-                        "lof_result": row.get("LOF Result"),
-                        "isolation_forest_score": None,
-                        "lof_score": None,
-                        "status": row.get("Status"),
-                        "details": {},
-                    })
-
-            analysis_id = save_analysis_bundle(
-                filename=filename,
-                row_count=len(data),
-                column_count=len(data.columns),
-                metadata={
-                    "columns": [str(column) for column in data.columns],
-                    "ml_detection_enabled": include_ml,
-                },
-                quality_score=score_data,
-                quality_issues=quality_issues,
-                anomaly_results=anomaly_results,
+            analysis_id = get_or_create_analysis_id(
+                dataset_fingerprint,
+                analysis_payload,
+                st.session_state,
             )
 
             st.success(
-                f"Analysis saved successfully! Analysis ID: {analysis_id}"
+                f"Analysis saved! Analysis ID: {analysis_id}"
             )
 
         except Exception as error:
@@ -696,7 +707,7 @@ def render_unified_results(data, quality_results,filename="uploaded_dataset"):
 
     if unified.empty:
         st.success("No findings detected by the supported checks.")
-        return
+        return analysis_context
 
     # Severity and Score Treatment are display-only columns. They are added to
     # the FULL table (same index as the score) before any filtering.
@@ -781,6 +792,8 @@ def render_unified_results(data, quality_results,filename="uploaded_dataset"):
             "and are excluded from the score."
         )
 
+    return analysis_context
+
 
 # Data Cleaning helpers
 INVALID_ACTION_CHOICES = {
@@ -799,7 +812,7 @@ MISSING_ACTION_CHOICES = {
 MAX_CLEANING_ROWS_SHOWN = 1000
 
 
-def render_cleaning_operations(data, rules):
+def render_cleaning_operations(data, rules, analysis_context=None):
     """Choose, preview and apply cleaning on a separate copy of the dataset."""
 
     if not data.columns.is_unique:
@@ -988,6 +1001,33 @@ def render_cleaning_operations(data, rules):
             "result": result
         }
 
+        if analysis_context is None:
+            st.warning(
+                "Cleaning was applied, but it could not be saved because "
+                "there is no analysis record for this dataset."
+            )
+        else:
+            try:
+                analysis_id = persist_applied_cleaning(
+                    analysis_context["fingerprint"],
+                    analysis_context["analysis_payload"],
+                    st.session_state,
+                    result,
+                    settings={
+                        "remove_duplicates": remove_duplicates,
+                        "invalid_action": invalid_action,
+                        "missing_action": missing_action,
+                    },
+                )
+                st.success(
+                    f"Cleaning action saved to analysis {analysis_id}."
+                )
+            except Exception as error:
+                st.warning(
+                    "Cleaning was applied, but its action could not be "
+                    f"saved to PostgreSQL ({type(error).__name__})."
+                )
+
     applied = st.session_state.get("cleaning_applied")
 
     if applied is None:
@@ -1107,14 +1147,14 @@ def render_review_suggestions(data, iqr_outliers):
         st.success("No ML anomalies to review.")
 
 
-def render_data_cleaning(data, rules, iqr_outliers):
+def render_data_cleaning(data, rules, iqr_outliers, analysis_context=None):
     """Data Cleaning section: operations, preview, apply and review hints."""
 
     if data.empty:
         st.info("The uploaded dataset is empty, so there is nothing to clean.")
         return
 
-    render_cleaning_operations(data, rules)
+    render_cleaning_operations(data, rules, analysis_context)
 
     render_review_suggestions(data, iqr_outliers)
 
@@ -1655,7 +1695,7 @@ if uploaded_file is not None:
         # PHASE 11 — UNIFIED RESULTS
         st.header("🧩 Unified Results")
 
-        render_unified_results(
+        analysis_context = render_unified_results(
             df,
             {
                 SRC_MISSING: missing_values,
@@ -1672,7 +1712,7 @@ if uploaded_file is not None:
         # PHASE 12 — DATA CLEANING
         st.header("🧹 Data Cleaning")
 
-        render_data_cleaning(df, rules, outliers)
+        render_data_cleaning(df, rules, outliers, analysis_context)
 
     # Error Handling
     except Exception as e:

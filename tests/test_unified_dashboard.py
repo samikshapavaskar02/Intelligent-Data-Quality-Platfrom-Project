@@ -279,6 +279,28 @@ def test_fingerprint_handles_mixed_unhashable_and_empty_data():
     assert len(get_dataset_fingerprint(pd.DataFrame())) == 64
 
 
+def test_fingerprint_distinguishes_typed_values_inside_unhashable_columns():
+    integer_value = pd.DataFrame({
+        "payload": pd.Series([["marker"], 1, {"value": [None]}], dtype=object)
+    })
+    string_value = pd.DataFrame({
+        "payload": pd.Series([["marker"], "1", {"value": [None]}], dtype=object)
+    })
+
+    assert get_dataset_fingerprint(integer_value) != get_dataset_fingerprint(string_value)
+
+
+def test_fingerprint_is_stable_for_nested_dicts_regardless_of_key_insertion_order():
+    first = pd.DataFrame({
+        "payload": pd.Series([{"a": 1, "b": [None, "1"]}], dtype=object)
+    })
+    reordered = pd.DataFrame({
+        "payload": pd.Series([{"b": [None, "1"], "a": 1}], dtype=object)
+    })
+
+    assert get_dataset_fingerprint(first) == get_dataset_fingerprint(reordered)
+
+
 def test_fingerprint_does_not_modify_the_dataset():
     data = make_dataset()
     before = data.copy(deep=True)

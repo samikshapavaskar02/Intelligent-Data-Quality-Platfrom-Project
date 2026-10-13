@@ -34,7 +34,12 @@ What it does NOT do
 """
 
 import hashlib
+import json
+import math
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 
+import numpy as np
 import pandas as pd
 
 from modules.anomaly_pipeline import run_anomaly_pipeline
@@ -111,18 +116,97 @@ def get_dataset_fingerprint(df):
     fingerprints; changing any value, label, column name or dtype changes it.
     """
     _validate_dataset(df)
-    try:
-        row_hashes = pd.util.hash_pandas_object(df, index=True)
-    except TypeError:
-        # Cells that cannot be hashed (for example lists from a JSON file).
-        row_hashes = pd.util.hash_pandas_object(df.astype(str), index=True)
 
-    digest = hashlib.sha256()
-    digest.update(
-        repr((df.shape, [str(c) for c in df.columns], [str(t) for t in df.dtypes])).encode()
-    )
-    digest.update(row_hashes.to_numpy().tobytes())
-    return digest.hexdigest()
+    def encode(value):
+        """Return a typed, JSON-safe representation of a dataset value."""
+        if value is None:
+            return ["none"]
+        if value is pd.NA:
+            return ["pandas.NA"]
+        if value is pd.NaT:
+            return ["pandas.NaT"]
+        if isinstance(value, np.generic):
+            return ["numpy", value.dtype.str, encode(value.item())]
+        if isinstance(value, bool):
+            return ["bool", value]
+        if isinstance(value, int):
+            return ["int", str(value)]
+        if isinstance(value, float):
+            if math.isnan(value):
+                return ["float", "nan"]
+            if math.isinf(value):
+                return ["float", "+inf" if value > 0 else "-inf"]
+            return ["float", value.hex()]
+        if isinstance(value, str):
+            return ["str", value]
+        if isinstance(value, bytes):
+            return ["bytes", value.hex()]
+        if isinstance(value, Decimal):
+            parts = value.as_tuple()
+            return ["decimal", parts.sign, list(parts.digits), parts.exponent]
+        if isinstance(value, pd.Timestamp):
+            return ["pandas.Timestamp", value.isoformat(), str(value.tz)]
+        if isinstance(value, pd.Timedelta):
+            return ["pandas.Timedelta", value.value]
+        if isinstance(value, datetime):
+            return ["datetime", value.isoformat(), getattr(value.tzinfo, "key", None)]
+        if isinstance(value, date):
+            return ["date", value.isoformat()]
+        if isinstance(value, time):
+            return ["time", value.isoformat(), getattr(value.tzinfo, "key", None)]
+        if isinstance(value, timedelta):
+            return ["timedelta", value.days, value.seconds, value.microseconds]
+        if isinstance(value, list):
+            return ["list", [encode(item) for item in value]]
+        if isinstance(value, tuple):
+            return ["tuple", [encode(item) for item in value]]
+        if isinstance(value, dict):
+            items = [[encode(key), encode(item)] for key, item in value.items()]
+            items.sort(key=lambda pair: json.dumps(
+                pair[0], ensure_ascii=False, separators=(",", ":")
+            ))
+            return ["dict", items]
+        if isinstance(value, set):
+            items = [encode(item) for item in value]
+            items.sort(key=lambda item: json.dumps(
+                item, ensure_ascii=False, separators=(",", ":")
+            ))
+            return ["set", items]
+        if isinstance(value, frozenset):
+            items = [encode(item) for item in value]
+            items.sort(key=lambda item: json.dumps(
+                item, ensure_ascii=False, separators=(",", ":")
+            ))
+            return ["frozenset", items]
+        raise TypeError(
+            "Dataset fingerprint does not support values of type "
+            f"{type(value).__module__}.{type(value).__qualname__}."
+        )
+
+    index_values = [encode(value) for value in df.index.tolist()]
+    columns = [encode(value) for value in df.columns.tolist()]
+    index_dtypes = getattr(df.index, "dtypes", None)
+    if index_dtypes is None:
+        index_dtypes = [df.index.dtype]
+    rows = [
+        [encode(df.iloc[row, column]) for column in range(df.shape[1])]
+        for row in range(df.shape[0])
+    ]
+    identity = [
+        "dataframe-v2",
+        list(df.shape),
+        columns,
+        [str(dtype) for dtype in df.dtypes],
+        [type(df.index).__module__, type(df.index).__qualname__],
+        [str(dtype) for dtype in index_dtypes],
+        [encode(name) for name in df.index.names],
+        index_values,
+        rows,
+    ]
+    canonical = json.dumps(
+        identity, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def run_anomaly_sources(df):

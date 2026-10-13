@@ -1,4 +1,5 @@
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -104,25 +105,129 @@ def initialize_database():
             cursor.execute(schema)
 
 
-def create_analysis(filename, row_count, column_count, metadata=None):
-    """Save an analysis and return its generated ID."""
+def _analysis_identity_lock_key(filename, fingerprint):
+    """Derive a stable PostgreSQL bigint advisory-lock key for an identity."""
+    filename_bytes = filename.encode("utf-8")
+    fingerprint_bytes = fingerprint.encode("utf-8")
+    identity_bytes = (
+        len(filename_bytes).to_bytes(8, "big")
+        + filename_bytes
+        + len(fingerprint_bytes).to_bytes(8, "big")
+        + fingerprint_bytes
+    )
+    return int.from_bytes(hashlib.sha256(identity_bytes).digest()[:8], "big", signed=True)
+
+
+def _validate_analysis_identity(filename, fingerprint):
+    if not isinstance(filename, str) or not filename:
+        raise ValueError("An analysis filename is required for identity lookup.")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        raise ValueError("An analysis fingerprint is required for identity lookup.")
+
+
+def _find_analysis_id(cursor, filename, fingerprint):
+    cursor.execute(
+        """
+        SELECT id
+        FROM analyses
+        WHERE filename = %s
+          AND metadata->>'dataset_fingerprint' = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (filename, fingerprint),
+    )
+    row = cursor.fetchone()
+    return row[0] if row is not None else None
+
+
+def _find_analysis_bundle_id(cursor, filename, fingerprint):
+    """Find an exact identity that has the bundle's required score row."""
+    cursor.execute(
+        """
+        SELECT a.id
+        FROM analyses AS a
+        WHERE a.filename = %s
+          AND a.metadata->>'dataset_fingerprint' = %s
+          AND EXISTS (
+              SELECT 1
+              FROM quality_scores AS qs
+              WHERE qs.analysis_id = a.id
+          )
+        ORDER BY a.created_at DESC, a.id DESC
+        LIMIT 1
+        """,
+        (filename, fingerprint),
+    )
+    row = cursor.fetchone()
+    return row[0] if row is not None else None
+
+
+def _get_or_create_analysis_with_identity_lock(
+    filename, fingerprint, create_with_cursor, *, require_complete_bundle=False
+):
+    """Run identity lock, lookup, and insert in one READ COMMITTED transaction."""
+    _validate_analysis_identity(filename, fingerprint)
+    lock_key = _analysis_identity_lock_key(filename, fingerprint)
+
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO analyses
-                    (filename, row_count, column_count, metadata)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    filename,
-                    row_count,
-                    column_count,
-                    Jsonb(metadata or {}),
-                ),
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (lock_key,))
+
+            if require_complete_bundle:
+                analysis_id = _find_analysis_bundle_id(
+                    cursor, filename, fingerprint
+                )
+            else:
+                analysis_id = _find_analysis_id(cursor, filename, fingerprint)
+            if analysis_id is None:
+                analysis_id = create_with_cursor(cursor)
+
+    return analysis_id
+
+
+def _insert_analysis(cursor, filename, row_count, column_count, metadata=None):
+    cursor.execute(
+        """
+        INSERT INTO analyses
+            (filename, row_count, column_count, metadata)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            filename,
+            int(row_count),
+            int(column_count),
+            Jsonb(_make_json_safe(metadata or {})),
+        ),
+    )
+    return cursor.fetchone()[0]
+
+
+def create_analysis(filename, row_count, column_count, metadata=None):
+    """Save an analysis; identity-tagged calls reuse under an advisory lock.
+
+    Calls without a dataset_fingerprint retain the historical always-create
+    behavior because they do not provide enough information for identity-safe
+    reuse.
+    """
+    metadata = metadata or {}
+    fingerprint = metadata.get("dataset_fingerprint")
+    if fingerprint is not None:
+        return _get_or_create_analysis_with_identity_lock(
+            filename,
+            fingerprint,
+            lambda cursor: _insert_analysis(
+                cursor, filename, row_count, column_count, metadata
+            ),
+        )
+
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            return _insert_analysis(
+                cursor, filename, row_count, column_count, metadata
             )
-            return cursor.fetchone()[0]
 
 
 def save_quality_score(
@@ -286,6 +391,26 @@ def get_analysis_history(limit=50):
     ]
 
     return [dict(zip(columns, row)) for row in rows]
+
+
+def get_analysis_id_by_identity(filename, fingerprint):
+    """Find a saved analysis only when its filename and fingerprint match."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM analyses
+                WHERE filename = %s
+                  AND metadata->>'dataset_fingerprint' = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (filename, fingerprint),
+            )
+            row = cursor.fetchone()
+
+    return row[0] if row is not None else None
 
 
 def get_analysis_details(analysis_id):
@@ -472,7 +597,8 @@ def _make_json_safe(value):
     return str(value)
 
 
-def save_analysis_bundle(
+def _insert_analysis_bundle(
+    cursor,
     filename,
     row_count,
     column_count,
@@ -481,8 +607,7 @@ def save_analysis_bundle(
     quality_issues=None,
     anomaly_results=None,
 ):
-    """Save an analysis and its results in one transaction."""
-
+    """Insert analysis bundle rows using the caller's transaction cursor."""
     quality_score = quality_score or {}
     quality_issues = quality_issues or []
     anomaly_results = anomaly_results or []
@@ -492,83 +617,136 @@ def save_analysis_bundle(
     if overall_score is not None:
         overall_score = _make_json_safe(overall_score)
 
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO analyses
-                    (filename, row_count, column_count, metadata)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    filename,
-                    int(row_count),
-                    int(column_count),
-                    Jsonb(_make_json_safe(metadata or {})),
-                ),
-            )
+    analysis_id = _insert_analysis(
+        cursor, filename, row_count, column_count, metadata
+    )
 
-            analysis_id = cursor.fetchone()[0]
+    cursor.execute(
+        """
+        INSERT INTO quality_scores
+            (analysis_id, overall_score, dimensions, severity_summary)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (
+            analysis_id,
+            overall_score,
+            Jsonb(_make_json_safe(quality_score.get("dimensions") or {})),
+            Jsonb(_make_json_safe(
+                quality_score.get("severity_summary") or {}
+            )),
+        ),
+    )
 
-            cursor.execute(
-                """
-                INSERT INTO quality_scores
-                    (analysis_id, overall_score, dimensions, severity_summary)
-                VALUES (%s, %s, %s, %s)
-                """,
-                (
-                    analysis_id,
-                    overall_score,
-                    Jsonb(_make_json_safe(
-                        quality_score.get("dimensions") or {}
-                    )),
-                    Jsonb(_make_json_safe(
-                        quality_score.get("severity_summary") or {}
-                    )),
-                ),
-            )
+    for issue in quality_issues:
+        cursor.execute(
+            """
+            INSERT INTO quality_issues
+                (analysis_id, issue_type, column_name,
+                 issue_count, severity, details)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                analysis_id,
+                str(issue["issue_type"]),
+                issue.get("column_name"),
+                int(issue.get("issue_count", 0)),
+                issue.get("severity"),
+                Jsonb(_make_json_safe(issue.get("details") or {})),
+            ),
+        )
 
-            for issue in quality_issues:
-                cursor.execute(
-                    """
-                    INSERT INTO quality_issues
-                        (analysis_id, issue_type, column_name,
-                         issue_count, severity, details)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        analysis_id,
-                        str(issue["issue_type"]),
-                        issue.get("column_name"),
-                        int(issue.get("issue_count", 0)),
-                        issue.get("severity"),
-                        Jsonb(_make_json_safe(issue.get("details") or {})),
-                    ),
-                )
-
-            for anomaly in anomaly_results:
-                cursor.execute(
-                    """
-                    INSERT INTO anomaly_results
-                        (analysis_id, record_id, isolation_forest_result,
-                         lof_result, isolation_forest_score, lof_score,
-                         status, details)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        analysis_id,
-                        str(anomaly["record_id"]),
-                        anomaly.get("isolation_forest_result"),
-                        anomaly.get("lof_result"),
-                        _make_json_safe(
-                            anomaly.get("isolation_forest_score")
-                        ),
-                        _make_json_safe(anomaly.get("lof_score")),
-                        anomaly.get("status"),
-                        Jsonb(_make_json_safe(anomaly.get("details") or {})),
-                    ),
-                )
+    for anomaly in anomaly_results:
+        cursor.execute(
+            """
+            INSERT INTO anomaly_results
+                (analysis_id, record_id, isolation_forest_result,
+                 lof_result, isolation_forest_score, lof_score,
+                 status, details)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                analysis_id,
+                str(anomaly["record_id"]),
+                anomaly.get("isolation_forest_result"),
+                anomaly.get("lof_result"),
+                _make_json_safe(anomaly.get("isolation_forest_score")),
+                _make_json_safe(anomaly.get("lof_score")),
+                anomaly.get("status"),
+                Jsonb(_make_json_safe(anomaly.get("details") or {})),
+            ),
+        )
 
     return analysis_id
+
+
+def get_or_create_analysis_bundle(
+    filename,
+    row_count,
+    column_count,
+    metadata=None,
+    quality_score=None,
+    quality_issues=None,
+    anomaly_results=None,
+):
+    """Return the exact saved analysis or atomically insert its full bundle."""
+    metadata = metadata or {}
+    fingerprint = metadata.get("dataset_fingerprint")
+    _validate_analysis_identity(filename, fingerprint)
+
+    return _get_or_create_analysis_with_identity_lock(
+        filename,
+        fingerprint,
+        lambda cursor: _insert_analysis_bundle(
+            cursor,
+            filename,
+            row_count,
+            column_count,
+            metadata,
+            quality_score,
+            quality_issues,
+            anomaly_results,
+        ),
+        require_complete_bundle=True,
+    )
+
+
+def save_analysis_bundle(
+    filename,
+    row_count,
+    column_count,
+    metadata=None,
+    quality_score=None,
+    quality_issues=None,
+    anomaly_results=None,
+):
+    """Save an analysis bundle; fingerprinted calls use the identity lock.
+
+    Fingerprint-tagged bundles are idempotent by filename and fingerprint.
+    An analysis-only row without a quality score is not considered a bundle.
+    Calls without that metadata retain the historical always-create behavior.
+    """
+    metadata = metadata or {}
+    if metadata.get("dataset_fingerprint") is not None:
+        return get_or_create_analysis_bundle(
+            filename,
+            row_count,
+            column_count,
+            metadata,
+            quality_score,
+            quality_issues,
+            anomaly_results,
+        )
+
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            return _insert_analysis_bundle(
+                cursor,
+                filename,
+                row_count,
+                column_count,
+                metadata,
+                quality_score,
+                quality_issues,
+                anomaly_results,
+            )
 
