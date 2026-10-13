@@ -340,6 +340,7 @@ def evaluate_anomaly_methods(data, feature_columns=None, label_column=LABEL_COLU
         raise ValueError(f"Ground-truth column {label_column!r} must contain only 0/1 values.")
     truth = labels.astype(int).to_numpy().astype(bool)
 
+    features_were_explicitly_supplied = feature_columns is not None
     if feature_columns is None:
         feature_columns = [
             c for c in data.select_dtypes(include="number").columns if c != label_column
@@ -348,6 +349,15 @@ def evaluate_anomaly_methods(data, feature_columns=None, label_column=LABEL_COLU
     unknown = [c for c in feature_columns if c not in data.columns]
     if unknown:
         raise ValueError(f"Feature columns not found in the data: {unknown}")
+    if features_were_explicitly_supplied:
+        ground_truth_columns = {label_column}
+        if type_column is not None:
+            ground_truth_columns.add(type_column)
+        leaked_columns = [c for c in feature_columns if c in ground_truth_columns]
+        if leaked_columns:
+            raise ValueError(
+                f"Ground-truth columns cannot be used as features: {leaked_columns}"
+            )
     if not feature_columns:
         raise ValueError("No feature columns to evaluate.")
 
