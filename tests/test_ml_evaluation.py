@@ -4,8 +4,10 @@ import pytest
 from modules.ml_evaluation import (
     FEATURE_COLUMNS,
     LABEL_COLUMN,
+    METHOD_IQR,
     METHOD_IF,
     METHOD_LOF,
+    METHOD_ZSCORE,
     TYPE_COLUMN,
     compute_metrics,
     evaluate_anomaly_methods,
@@ -77,3 +79,38 @@ def test_evaluation_runs_isolation_forest_and_lof_with_separate_timing():
     assert (result.metrics["Execution Time (s)"] >= 0).all()
     assert LABEL_COLUMN not in result.feature_columns
     assert TYPE_COLUMN not in result.feature_columns
+
+
+def test_controlled_evaluation_returns_results_for_all_four_methods():
+    data = generate_evaluation_dataset(
+        n_samples=80, anomaly_fraction=0.1, random_state=31
+    )
+    methods = {METHOD_IQR, METHOD_ZSCORE, METHOD_IF, METHOD_LOF}
+
+    result = evaluate_anomaly_methods(data, n_repeats=1, random_state=31)
+
+    assert set(result.metrics["Method"]) == methods
+    assert set(result.predictions.columns) == methods | {"Ground Truth"}
+    assert len(result.predictions) == len(data)
+    pd.testing.assert_series_equal(
+        result.predictions["Ground Truth"],
+        data[LABEL_COLUMN].astype(bool).rename("Ground Truth"),
+    )
+
+    metric_columns = {"Precision", "Recall", "F1-score", "Detected", "Execution Time (s)"}
+    assert metric_columns <= set(result.metrics.columns)
+    assert result.metrics["Precision"].between(0, 1).all()
+    assert result.metrics["Recall"].between(0, 1).all()
+    assert result.metrics["F1-score"].between(0, 1).all()
+    assert result.metrics["Detected"].between(0, len(data)).all()
+    assert result.metrics["Execution Time (s)"].ge(0).all()
+
+    assert set(result.confusion_matrices) == methods
+    for method, matrix in result.confusion_matrices.items():
+        assert matrix.shape == (2, 2)
+        assert matrix.index.tolist() == ["Actual Normal", "Actual Anomaly"]
+        assert matrix.columns.tolist() == ["Predicted Normal", "Predicted Anomaly"]
+        metrics = result.metrics.set_index("Method").loc[method]
+        assert matrix.loc["Actual Anomaly", "Predicted Anomaly"] == metrics["TP"]
+        assert matrix.loc["Actual Normal", "Predicted Anomaly"] == metrics["FP"]
+        assert matrix.to_numpy().sum() == len(data)
