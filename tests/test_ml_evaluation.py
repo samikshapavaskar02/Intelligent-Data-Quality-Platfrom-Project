@@ -1,3 +1,7 @@
+from types import SimpleNamespace
+from io import StringIO
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -9,6 +13,7 @@ from modules.ml_evaluation import (
     METHOD_LOF,
     METHOD_ZSCORE,
     TYPE_COLUMN,
+    build_evaluation_report,
     compute_metrics,
     evaluate_anomaly_methods,
     generate_evaluation_dataset,
@@ -114,3 +119,53 @@ def test_controlled_evaluation_returns_results_for_all_four_methods():
         assert matrix.loc["Actual Anomaly", "Predicted Anomaly"] == metrics["TP"]
         assert matrix.loc["Actual Normal", "Predicted Anomaly"] == metrics["FP"]
         assert matrix.to_numpy().sum() == len(data)
+
+
+def test_build_evaluation_report_includes_metrics_settings_and_preserves_missing_values():
+    result = SimpleNamespace(
+        metrics=pd.DataFrame([{
+            "Method": "IQR", "Detected": 3, "TP": 2, "FP": 1, "FN": 1,
+            "TN": 6, "Precision": np.nan, "Recall": 2 / 3,
+            "F1-score": 0.5, "Execution Time (s)": 0.0123,
+        }]),
+        settings={
+            "records": 10,
+            "known_anomalies": 3,
+            "anomaly_rate": 0.3,
+            "random_state": 27,
+            "contamination": "auto",
+            "preprocessing_time_s": 0.004,
+        },
+    )
+
+    report = build_evaluation_report(result)
+    exported = pd.read_csv(StringIO(report.to_csv(index=False)))
+
+    assert exported.loc[0, "Method"] == "IQR"
+    assert exported.loc[0, "Detected"] == 3
+    assert exported.loc[0, "TP"] == 2
+    assert exported.loc[0, "FP"] == 1
+    assert exported.loc[0, "FN"] == 1
+    assert exported.loc[0, "TN"] == 6
+    assert np.isnan(exported.loc[0, "Precision"])
+    assert exported.loc[0, "Recall"] == pytest.approx(2 / 3)
+    assert exported.loc[0, "F1-score"] == pytest.approx(0.5)
+    assert exported.loc[0, "Execution Time (s)"] == pytest.approx(0.0123)
+    assert exported.loc[0, "Record Count"] == 10
+    assert exported.loc[0, "Known Anomaly (%)"] == pytest.approx(30.0)
+    assert exported.loc[0, "Random Seed"] == 27
+    assert exported.loc[0, "Contamination"] == "auto"
+    assert exported.loc[0, "Preprocessing Time (s)"] == pytest.approx(0.004)
+
+
+def test_build_evaluation_report_rejects_missing_required_metrics():
+    result = SimpleNamespace(
+        metrics=pd.DataFrame([{"Method": "IQR"}]),
+        settings={
+            "records": 10, "anomaly_rate": 0.1, "random_state": 1,
+            "contamination": "auto", "preprocessing_time_s": 0.0,
+        },
+    )
+
+    with pytest.raises(ValueError, match="missing required columns"):
+        build_evaluation_report(result)

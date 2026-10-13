@@ -41,6 +41,7 @@ The module contains no Streamlit code.
 import time
 import warnings
 from dataclasses import dataclass, field
+from numbers import Real
 
 import numpy as np
 import pandas as pd
@@ -107,6 +108,59 @@ class EvaluationResult:
     type_recall: pd.DataFrame
     settings: dict
     warnings: list = field(default_factory=list)
+
+
+EVALUATION_REPORT_METRIC_COLUMNS = [
+    "Method", "Detected", "TP", "FP", "FN", "TN", "Precision", "Recall",
+    "F1-score", "Execution Time (s)",
+]
+EVALUATION_REPORT_SETTING_COLUMNS = [
+    "Record Count", "Known Anomaly (%)", "Random Seed", "Contamination",
+    "Preprocessing Time (s)",
+]
+
+
+def build_evaluation_report(result):
+    """Build a CSV-ready table from an already computed evaluation result.
+
+    Metric values are copied as-is, including missing values. Missing schema
+    fields or settings are rejected instead of being filled with invented
+    values.
+    """
+    metrics = getattr(result, "metrics", None)
+    settings = getattr(result, "settings", None)
+    if not isinstance(metrics, pd.DataFrame):
+        raise ValueError("Evaluation metrics are not available as a DataFrame.")
+    if not isinstance(settings, dict):
+        raise ValueError("Evaluation settings are not available.")
+
+    missing_columns = [
+        column for column in EVALUATION_REPORT_METRIC_COLUMNS
+        if column not in metrics.columns
+    ]
+    if missing_columns:
+        raise ValueError(f"Evaluation metrics are missing required columns: {missing_columns}")
+
+    required_settings = {
+        "records", "anomaly_rate", "random_state", "contamination",
+        "preprocessing_time_s",
+    }
+    missing_settings = sorted(required_settings - settings.keys())
+    if missing_settings:
+        raise ValueError(f"Evaluation settings are missing required values: {missing_settings}")
+
+    anomaly_rate = settings["anomaly_rate"]
+    if (isinstance(anomaly_rate, bool) or not isinstance(anomaly_rate, Real)
+            or not np.isfinite(anomaly_rate) or not 0 <= anomaly_rate <= 1):
+        raise ValueError("Evaluation anomaly_rate must be a finite fraction from 0 to 1.")
+
+    report = metrics[EVALUATION_REPORT_METRIC_COLUMNS].copy()
+    report["Record Count"] = settings["records"]
+    report["Known Anomaly (%)"] = float(anomaly_rate) * 100
+    report["Random Seed"] = settings["random_state"]
+    report["Contamination"] = settings["contamination"]
+    report["Preprocessing Time (s)"] = settings["preprocessing_time_s"]
+    return report[EVALUATION_REPORT_METRIC_COLUMNS + EVALUATION_REPORT_SETTING_COLUMNS]
 
 
 # ----------------------------------------------------------------------

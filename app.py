@@ -51,6 +51,7 @@ from modules.ml_evaluation import (
     DEFAULT_N_SAMPLES,
     DEFAULT_RANDOM_STATE,
     MIN_SAMPLES,
+    build_evaluation_report,
     run_ml_evaluation
 )
 
@@ -1262,6 +1263,19 @@ def render_ml_evaluation():
         use_container_width=True,
         hide_index=True
     )
+
+    try:
+        evaluation_report = build_evaluation_report(result)
+    except (TypeError, ValueError) as error:
+        st.warning(f"The ML evaluation report could not be built: {error}")
+    else:
+        st.download_button(
+            label="Download ML Evaluation Report",
+            data=evaluation_report.to_csv(index=False),
+            file_name="ml_evaluation_report.csv",
+            mime="text/csv",
+            key="download_ml_evaluation_report"
+        )
 
     best = result.metrics.loc[result.metrics["F1-score"].idxmax()]
 
